@@ -1,0 +1,11 @@
+.button {
+  border: 1px solid #555;
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: #f4f4f4;
+  cursor: pointer;
+  font-weight: 700;
+}
+.primary { background: #24598f; border-color: #4ea3ff; }
+.secondary { background: #303030; }
+.danger { background: #4a2626; border-color: #814444; }
