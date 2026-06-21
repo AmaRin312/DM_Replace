@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 import { getOrCreateProfile } from "@/lib/auth/getOrCreateProfile";
 import { createInitialRoomState } from "@/lib/room-state/createInitialRoomState";
@@ -304,6 +304,54 @@ function cleanStacksAfterMovingCards(
   return nextStacks;
 }
 
+function applyDeckCardFieldsToCard(
+  card: RoomState["cardInstances"][string],
+  deckCard: DeckCardRow
+): RoomState["cardInstances"][string] {
+  const imageUrl = deckCard.image_url ?? deckCard.imageUrl ?? null;
+
+  return {
+    ...card,
+    cardId: deckCard.card_id ?? (card as typeof card & { cardId?: string | null }).cardId ?? null,
+    imageUrl: imageUrl ?? (card as typeof card & { imageUrl?: string | null }).imageUrl ?? null,
+    image_url: imageUrl ?? (card as typeof card & { image_url?: string | null }).image_url ?? null,
+    civilization:
+      deckCard.civilization ??
+      (card as typeof card & { civilization?: string | null }).civilization ??
+      null,
+    cost:
+      deckCard.cost ??
+      (card as typeof card & { cost?: number | null }).cost ??
+      null,
+    type:
+      deckCard.type ??
+      (card as typeof card & { type?: string | null }).type ??
+      null,
+    race:
+      deckCard.race ??
+      (card as typeof card & { race?: string | null }).race ??
+      null,
+    power:
+      deckCard.power ??
+      (card as typeof card & { power?: string | number | null }).power ??
+      null,
+    text:
+      deckCard.text ??
+      (card as typeof card & { text?: string | null }).text ??
+      null
+  } as typeof card & {
+    cardId?: string | null;
+    imageUrl?: string | null;
+    image_url?: string | null;
+    civilization?: string | null;
+    cost?: number | null;
+    type?: string | null;
+    race?: string | null;
+    power?: string | number | null;
+    text?: string | null;
+  };
+}
+
 function applyDeckImageUrlsToInitialState(
   initialState: RoomState,
   player1DeckCards: DeckCardRow[],
@@ -312,38 +360,51 @@ function applyDeckImageUrlsToInitialState(
   const nextCardInstances = { ...initialState.cardInstances };
 
   const applyToPlayer = (player: PlayerSide, deckCards: DeckCardRow[]) => {
-    const playerState = initialState.players[player];
+    if (deckCards.length === 0) return;
 
-    playerState.deckOrder.forEach((cardInstanceId, index) => {
+    const deckCardQueuesByName = new Map<string, DeckCardRow[]>();
+
+    deckCards.forEach((deckCard) => {
+      const key = normalizeCardNameForLookup(deckCard.card_name);
+      const queue = deckCardQueuesByName.get(key) ?? [];
+      queue.push(deckCard);
+      deckCardQueuesByName.set(key, queue);
+    });
+
+    const playerCardIds = Object.values(initialState.cardInstances)
+      .filter((card) => card.owner === player)
+      .map((card) => card.id);
+
+    const orderedPlayerCardIds = [
+      ...initialState.players[player].shields.flatMap((stack) => stack),
+      ...initialState.players[player].hand,
+      ...initialState.players[player].deckOrder,
+      ...initialState.players[player].battle,
+      ...initialState.players[player].mana,
+      ...initialState.players[player].grave,
+      ...playerCardIds.filter(
+        (cardId) =>
+          !initialState.players[player].shields.flatMap((stack) => stack).includes(cardId) &&
+          !initialState.players[player].hand.includes(cardId) &&
+          !initialState.players[player].deckOrder.includes(cardId) &&
+          !initialState.players[player].battle.includes(cardId) &&
+          !initialState.players[player].mana.includes(cardId) &&
+          !initialState.players[player].grave.includes(cardId)
+      )
+    ];
+
+    orderedPlayerCardIds.forEach((cardInstanceId, index) => {
       const card = nextCardInstances[cardInstanceId];
-      const deckCard = deckCards[index];
+      if (!card) return;
 
-      if (!card || !deckCard) return;
+      const cardNameKey = normalizeCardNameForLookup(card.name);
+      const queue = deckCardQueuesByName.get(cardNameKey);
+      const deckCardFromName = queue?.shift();
+      const deckCard = deckCardFromName ?? deckCards[index];
 
-      const imageUrl = deckCard.image_url ?? deckCard.imageUrl ?? null;
+      if (!deckCard) return;
 
-      nextCardInstances[cardInstanceId] = {
-        ...card,
-        cardId: deckCard.card_id ?? null,
-        imageUrl: imageUrl ?? null,
-        image_url: imageUrl ?? null,
-        civilization: deckCard.civilization ?? null,
-        cost: deckCard.cost ?? null,
-        type: deckCard.type ?? null,
-        race: deckCard.race ?? null,
-        power: deckCard.power ?? null,
-        text: deckCard.text ?? null
-      } as typeof card & {
-        cardId?: string | null;
-        imageUrl?: string | null;
-        image_url?: string | null;
-        civilization?: string | null;
-        cost?: number | null;
-        type?: string | null;
-        race?: string | null;
-        power?: string | null;
-        text?: string | null;
-      };
+      nextCardInstances[cardInstanceId] = applyDeckCardFieldsToCard(card, deckCard);
     });
   };
 
@@ -610,6 +671,7 @@ async function getDeckCardsForPreparation(deckId: string): Promise<DeckCardRow[]
 
 export default function RoomDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const roomCode = params.roomCode as string;
 
   const [room, setRoom] = useState<Room | null>(null);
@@ -1092,8 +1154,43 @@ if (existingMemberInDb) {
       setSavedDecks(deckData ?? []);
 
       const loadedRoomState = (stateData?.state_json as RoomState | null) ?? null;
+      let nextLoadedRoomState = loadedRoomState;
 
-setRoomState(loadedRoomState);
+      if (loadedRoomState) {
+        const player1Member = refreshedMembers.find((member) => member.role === "player1");
+        const player2Member = refreshedMembers.find((member) => member.role === "player2");
+
+        const [player1DeckCards, player2DeckCards] = await Promise.all([
+          player1Member?.selected_deck_id
+            ? getDeckCardsForPreparation(player1Member.selected_deck_id)
+            : Promise.resolve([] as DeckCardRow[]),
+          player2Member?.selected_deck_id
+            ? getDeckCardsForPreparation(player2Member.selected_deck_id)
+            : Promise.resolve([] as DeckCardRow[])
+        ]);
+
+        nextLoadedRoomState = applyDeckImageUrlsToInitialState(
+          loadedRoomState,
+          player1DeckCards,
+          player2DeckCards
+        );
+
+        if (JSON.stringify(nextLoadedRoomState) !== JSON.stringify(loadedRoomState)) {
+          const { error: repairError } = await supabase
+            .from("room_state")
+            .update({
+              state_json: nextLoadedRoomState,
+              updated_at: new Date().toISOString()
+            })
+            .eq("room_id", typedRoomData.id);
+
+          if (repairError) {
+            console.warn("盤面カード画像情報の補完に失敗しました。表示のみ続行します。", repairError);
+          }
+        }
+      }
+
+      setRoomState(nextLoadedRoomState);
 
       const activeMember = myMember ?? refreshedMembers.find((member) => member.user_id === profile.id);
 
@@ -1555,7 +1652,7 @@ setRoomState(loadedRoomState);
     setUndoSnapshot(null);
     setMessage("部屋を解散しました。");
 
-    await loadRoom();
+    router.push("/rooms");
   }
 
   async function leaveRoom() {
@@ -4111,12 +4208,6 @@ async function inspectDeckAndSelect(
           </button>
         )}
 
-        {(myRole === "player1" || room.owner_id === myProfile?.id) && (
-          <button type="button" onClick={dissolveRoom} disabled={isStaleClient || isBoardOperationPending}>
-            部屋を解散
-          </button>
-        )}
-
         {canUseRoomActions && (
           <button type="button" onClick={leaveRoom} disabled={isStaleClient || isBoardOperationPending}>
             退出
@@ -4152,6 +4243,23 @@ async function inspectDeckAndSelect(
             <span style={{ color: "#bfdbfe" }}>{connectionMessage}</span>
           )}
         </section>
+
+        {(myRole === "player1" || room.owner_id === myProfile?.id) && (
+          <button
+            type="button"
+            onClick={dissolveRoom}
+            disabled={isStaleClient || isBoardOperationPending}
+            style={{
+              marginTop: "auto",
+              borderColor: "#7f1d1d",
+              background: "#3f1111",
+              color: "#fecaca",
+              fontWeight: 700
+            }}
+          >
+            部屋を解散
+          </button>
+        )}
 
         <style>{`
           aside button,
