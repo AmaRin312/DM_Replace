@@ -669,6 +669,73 @@ async function getDeckCardsForPreparation(deckId: string): Promise<DeckCardRow[]
   return enrichDeckCardsFromCardMaster((data ?? []) as DeckCardRow[]);
 }
 
+
+function normalizeRoomStateForDisplay(state: RoomState | null): RoomState | null {
+  if (!state) return null;
+
+  const seenCardIds = new Set<string>();
+  const nextCardInstances: RoomState["cardInstances"] = { ...state.cardInstances };
+
+  const cleanList = (cardIds: string[], owner: PlayerSide, zone: Zone) => {
+    const nextIds: string[] = [];
+
+    cardIds.forEach((cardId) => {
+      const card = nextCardInstances[cardId];
+      if (!card || seenCardIds.has(cardId)) return;
+
+      seenCardIds.add(cardId);
+      nextIds.push(cardId);
+      nextCardInstances[cardId] = {
+        ...card,
+        owner,
+        zone
+      };
+    });
+
+    return nextIds;
+  };
+
+  const cleanShields = (shields: string[][], owner: PlayerSide) => {
+    return shields
+      .map((stack) => cleanList(stack, owner, "shield"))
+      .filter((stack) => stack.length > 0);
+  };
+
+  const cleanPlayer = (owner: PlayerSide) => {
+    const player = state.players[owner];
+
+    return {
+      ...player,
+      deckOrder: cleanList(player.deckOrder, owner, "deck"),
+      hand: cleanList(player.hand, owner, "hand"),
+      battle: cleanList(player.battle, owner, "battle"),
+      mana: cleanList(player.mana, owner, "mana"),
+      grave: cleanList(player.grave, owner, "grave"),
+      shields: cleanShields(player.shields, owner)
+    };
+  };
+
+  const nextStacks: RoomState["stacks"] = {};
+
+  Object.entries(state.stacks).forEach(([stackId, cardIds]) => {
+    const existingIds = cardIds.filter((cardId) => Boolean(nextCardInstances[cardId]));
+
+    if (existingIds.length >= 2) {
+      nextStacks[stackId] = existingIds;
+    }
+  });
+
+  return {
+    ...state,
+    players: {
+      player1: cleanPlayer("player1"),
+      player2: cleanPlayer("player2")
+    },
+    cardInstances: nextCardInstances,
+    stacks: nextStacks
+  };
+}
+
 export default function RoomDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -1169,10 +1236,12 @@ if (existingMemberInDb) {
             : Promise.resolve([] as DeckCardRow[])
         ]);
 
-        nextLoadedRoomState = applyDeckImageUrlsToInitialState(
-          loadedRoomState,
-          player1DeckCards,
-          player2DeckCards
+        nextLoadedRoomState = normalizeRoomStateForDisplay(
+          applyDeckImageUrlsToInitialState(
+            loadedRoomState,
+            player1DeckCards,
+            player2DeckCards
+          )
         );
 
         if (JSON.stringify(nextLoadedRoomState) !== JSON.stringify(loadedRoomState)) {
@@ -1190,7 +1259,7 @@ if (existingMemberInDb) {
         }
       }
 
-      setRoomState(nextLoadedRoomState);
+      setRoomState(normalizeRoomStateForDisplay(nextLoadedRoomState));
 
       const activeMember = myMember ?? refreshedMembers.find((member) => member.user_id === profile.id);
 
@@ -1623,7 +1692,8 @@ if (existingMemberInDb) {
     const { error: memberError } = await supabase
       .from("room_members")
       .update({
-        left_at: now
+        left_at: now,
+        active_client_id: null
       })
       .eq("room_id", room!.id)
       .is("left_at", null);
@@ -1676,7 +1746,8 @@ if (existingMemberInDb) {
     const { error: memberError } = await supabase
       .from("room_members")
       .update({
-        left_at: now
+        left_at: now,
+        active_client_id: null
       })
       .eq("room_id", room!.id)
       .eq("user_id", myProfile.id)

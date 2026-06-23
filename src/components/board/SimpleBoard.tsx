@@ -428,11 +428,15 @@ function canSeeCardName(
   viewerRole: PlayerSide | null = null,
   revealAllHands = false
 ) {
-  const isMine = card.owner === myRole;
-  const isViewerSide = viewerRole !== null && card.owner === viewerRole;
+  const isPlayerSelf = myRole !== "spectator" && myRole !== null && card.owner === myRole;
+  const isSpectatorViewingOwner =
+    myRole === "spectator" && viewerRole !== null && card.owner === viewerRole;
+  const isOwnerSideView = isPlayerSelf || isSpectatorViewingOwner;
 
-  if (isMine || isViewerSide) {
-    if (card.zone === "shield" && !card.faceUp) return false;
+  if (card.zone === "deck") return false;
+
+  if (isOwnerSideView) {
+    if (card.zone === "shield") return card.faceUp;
     return true;
   }
 
@@ -448,11 +452,16 @@ function canSeeCardName(
     return card.faceUp;
   }
 
-  if (card.zone === "deck") {
-    return false;
-  }
-
   return true;
+}
+
+function canSeeCardFace(
+  card: CardInstance,
+  myRole: PlayerSide | "spectator" | null,
+  viewerRole: PlayerSide | null = null,
+  revealAllHands = false
+) {
+  return canSeeCardName(card, myRole, viewerRole, revealAllHands);
 }
 
 function canOpenCardViewer(
@@ -461,7 +470,7 @@ function canOpenCardViewer(
   viewerRole: PlayerSide | null = null,
   revealAllHands = false
 ) {
-  return canSeeCardName(card, myRole, viewerRole, revealAllHands);
+  return canSeeCardFace(card, myRole, viewerRole, revealAllHands);
 }
 
 function getVisibleCardName(
