@@ -89,6 +89,19 @@ type ExtendedRoomState = RoomState & {
   checkingStatus?: CheckingStatus | null;
 };
 
+type RoomStateRow = {
+  state_json: RoomState | null;
+  updated_at: string | null;
+  operation_count: number | null;
+};
+
+function toTimeValue(value: string | null | undefined) {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+
 function getDeckVisibility(
   state: RoomState | null,
   player: PlayerSide
@@ -182,6 +195,29 @@ function publicMoveMessage(params: {
   const fromText = params.fromZone ? `${zoneLabel(params.fromZone)}から` : "";
 
   return `${params.actorName}が${cardText}${countText}を${fromText}${zoneLabel(params.toZone)}へ移動しました。`;
+}
+
+function compactOperationMessage(message: string) {
+  return message.replace(/\s+/g, " ").trim().slice(0, 140);
+}
+
+function compactOperationPayload(payload?: Record<string, unknown>) {
+  if (!payload) return {};
+
+  const allowedKeys = [
+    "cardId",
+    "cardIds",
+    "fromZone",
+    "toZone",
+    "count",
+    "player",
+    "choice",
+    "eventType"
+  ];
+
+  return Object.fromEntries(
+    Object.entries(payload).filter(([key]) => allowedKeys.includes(key))
+  );
 }
 
 function undoableActionLabel(eventType: string) {
@@ -736,6 +772,50 @@ function normalizeRoomStateForDisplay(state: RoomState | null): RoomState | null
   };
 }
 
+
+function validateRoomStateForSave(state: RoomState) {
+  const seenCardIds = new Set<string>();
+
+  const checkList = (cardIds: string[], owner: PlayerSide, zone: Zone) => {
+    for (const cardId of cardIds) {
+      const card = state.cardInstances[cardId];
+
+      if (!card) {
+        return `${zoneLabel(zone)}に存在しないカードが含まれています。`;
+      }
+
+      if (card.owner !== owner) {
+        return `${zoneLabel(zone)}に別プレイヤーのカードが含まれています。`;
+      }
+
+      if (seenCardIds.has(cardId)) {
+        return "同じカードが複数のゾーンに存在しています。再読み込みしてください。";
+      }
+
+      seenCardIds.add(cardId);
+    }
+
+    return null;
+  };
+
+  for (const player of ["player1", "player2"] as PlayerSide[]) {
+    const board = state.players[player];
+    const checks = [
+      checkList(board.deckOrder, player, "deck"),
+      checkList(board.hand, player, "hand"),
+      checkList(board.battle, player, "battle"),
+      checkList(board.mana, player, "mana"),
+      checkList(board.grave, player, "grave"),
+      ...board.shields.map((stack) => checkList(stack, player, "shield"))
+    ];
+
+    const error = checks.find(Boolean);
+    if (error) return error;
+  }
+
+  return null;
+}
+
 export default function RoomDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -767,6 +847,12 @@ export default function RoomDetailPage() {
   const boardOperationLockRef = useRef(false);
   const boardOperationUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const realtimeReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const realtimeReloadSequenceRef = useRef(0);
+  const realtimeReloadInFlightRef = useRef(false);
+  const realtimeReloadQueuedRef = useRef(false);
+  const lastRealtimeReloadAtRef = useRef(0);
+  const lastAcceptedRoomStateUpdatedAtRef = useRef(0);
+  const lastAcceptedOperationCountRef = useRef(0);
   const [showParticipantsPanel, setShowParticipantsPanel] = useState(false);
   const [showDeckPanel, setShowDeckPanel] = useState(false);
   const [showStartPanel, setShowStartPanel] = useState(false);
@@ -817,7 +903,7 @@ export default function RoomDetailPage() {
 
     boardOperationUnlockTimerRef.current = setTimeout(() => {
       unlockBoardOperation();
-    }, 1500);
+    }, 8000);
 
     return true;
   }
@@ -839,14 +925,41 @@ export default function RoomDetailPage() {
   }
 
   function scheduleRealtimeReload() {
+    realtimeReloadQueuedRef.current = true;
+    const sequence = realtimeReloadSequenceRef.current + 1;
+    realtimeReloadSequenceRef.current = sequence;
+
     if (realtimeReloadTimerRef.current) {
       clearTimeout(realtimeReloadTimerRef.current);
     }
 
-    realtimeReloadTimerRef.current = setTimeout(() => {
+    const elapsedFromLastReload = Date.now() - lastRealtimeReloadAtRef.current;
+    const delay = elapsedFromLastReload < 700 ? 700 : 450;
+
+    realtimeReloadTimerRef.current = setTimeout(async () => {
       realtimeReloadTimerRef.current = null;
-      void loadRoom();
-    }, 250);
+
+      if (sequence !== realtimeReloadSequenceRef.current) return;
+
+      if (realtimeReloadInFlightRef.current) {
+        scheduleRealtimeReload();
+        return;
+      }
+
+      realtimeReloadQueuedRef.current = false;
+      realtimeReloadInFlightRef.current = true;
+
+      try {
+        await loadRoom({ silent: true });
+        lastRealtimeReloadAtRef.current = Date.now();
+      } finally {
+        realtimeReloadInFlightRef.current = false;
+
+        if (realtimeReloadQueuedRef.current) {
+          scheduleRealtimeReload();
+        }
+      }
+    }, delay);
   }
 
   async function saveOperationLog(params: {
@@ -861,13 +974,64 @@ export default function RoomDetailPage() {
       actor_user_id: myProfile.id,
       actor_name: actorDisplayName(myProfile),
       event_type: params.eventType,
-      message: params.message,
-      payload: params.payload ?? {}
+      message: compactOperationMessage(params.message),
+      payload: compactOperationPayload(params.payload)
     });
 
     if (error) {
       console.error("操作ログ保存エラー:", error);
     }
+  }
+
+  async function persistRoomState(
+    nextState: RoomState,
+    options: { operationCount?: number; mode?: "update" | "upsert" } = {}
+  ) {
+    if (!room) {
+      unlockBoardOperation();
+      return new Error("ルーム情報を確認できません。ページを再読み込みしてください。");
+    }
+
+    const normalizedState = normalizeRoomStateForDisplay(nextState) ?? nextState;
+    const validationError = validateRoomStateForSave(normalizedState);
+
+    if (validationError) {
+      unlockBoardOperation();
+      return new Error(validationError);
+    }
+
+    const nextUpdatedAt = new Date().toISOString();
+    const nextOperationCount =
+      Math.max(lastAcceptedOperationCountRef.current, 0) + (options.operationCount ?? 1);
+
+    const payload = {
+      state_json: normalizedState,
+      operation_count: nextOperationCount,
+      updated_at: nextUpdatedAt
+    };
+
+    const result =
+      options.mode === "upsert"
+        ? await supabase.from("room_state").upsert({
+            room_id: room.id,
+            ...payload
+          })
+        : await supabase
+            .from("room_state")
+            .update(payload)
+            .eq("room_id", room.id);
+
+    if (result.error) {
+      unlockBoardOperation();
+      return result.error;
+    }
+
+    setRoomState(normalizedState);
+    lastAcceptedRoomStateUpdatedAtRef.current = toTimeValue(nextUpdatedAt);
+    lastAcceptedOperationCountRef.current = nextOperationCount;
+    setLastSyncedAt(new Date().toLocaleTimeString());
+    unlockBoardOperation();
+    return null;
   }
 
   function rememberUndoSnapshot(params: {
@@ -1115,8 +1279,8 @@ if (existingMemberInDb) {
   };
 }
 
-  async function loadRoom() {
-    setLoading(true);
+  async function loadRoom(options?: { silent?: boolean }) {
+    if (!options?.silent) setLoading(true);
 
     try {
       const profile = await getOrCreateProfile();
@@ -1198,13 +1362,21 @@ if (existingMemberInDb) {
 
       const { data: stateData, error: stateError } = await supabase
         .from("room_state")
-        .select("state_json")
+        .select("state_json, updated_at, operation_count")
         .eq("room_id", typedRoomData.id)
         .maybeSingle();
 
       if (stateError) {
         console.error("盤面状態取得エラー:", stateError);
       }
+
+      const stateRow = (stateData as RoomStateRow | null) ?? null;
+      const incomingRoomStateUpdatedAt = toTimeValue(stateRow?.updated_at);
+      const incomingOperationCount = stateRow?.operation_count ?? 0;
+      const shouldAcceptIncomingRoomState =
+        !options?.silent ||
+        incomingRoomStateUpdatedAt >= lastAcceptedRoomStateUpdatedAtRef.current ||
+        incomingOperationCount >= lastAcceptedOperationCountRef.current;
 
       const { data: latestRoomData } = await supabase
         .from("rooms")
@@ -1220,7 +1392,7 @@ if (existingMemberInDb) {
       setSelectedDeckId(myMember?.selected_deck_id ?? ensuredMembership?.selectedDeckId ?? "");
       setSavedDecks(deckData ?? []);
 
-      const loadedRoomState = (stateData?.state_json as RoomState | null) ?? null;
+      const loadedRoomState = (stateRow?.state_json as RoomState | null) ?? null;
       let nextLoadedRoomState = loadedRoomState;
 
       if (loadedRoomState) {
@@ -1259,7 +1431,15 @@ if (existingMemberInDb) {
         }
       }
 
-      setRoomState(normalizeRoomStateForDisplay(nextLoadedRoomState));
+      if (shouldAcceptIncomingRoomState) {
+        setRoomState(normalizeRoomStateForDisplay(nextLoadedRoomState));
+        if (incomingRoomStateUpdatedAt > 0) {
+          lastAcceptedRoomStateUpdatedAtRef.current = incomingRoomStateUpdatedAt;
+        }
+        if (incomingOperationCount > 0) {
+          lastAcceptedOperationCountRef.current = incomingOperationCount;
+        }
+      }
 
       const activeMember = myMember ?? refreshedMembers.find((member) => member.user_id === profile.id);
 
@@ -1275,10 +1455,12 @@ if (existingMemberInDb) {
 
       setIsStaleClient(false);
 
-      if (ensuredMembership?.message) {
-        setMessage(ensuredMembership.message);
-      } else {
-        setMessage("");
+      if (!options?.silent) {
+        if (ensuredMembership?.message) {
+          setMessage(ensuredMembership.message);
+        } else {
+          setMessage("");
+        }
       }
     } catch (error) {
       console.error("ルーム詳細ページの読み込みでエラー:", error);
@@ -1372,12 +1554,7 @@ if (existingMemberInDb) {
           }
         : soloPreparationState;
 
-      const { error } = await supabase.from("room_state").upsert({
-        room_id: room.id,
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      });
+      const error = await persistRoomState(nextState, { operationCount: 1, mode: "upsert" });
 
       if (error) {
         console.error("盤面リセットエラー:", error);
@@ -1533,12 +1710,7 @@ if (existingMemberInDb) {
             player2DeckCards
           });
 
-      const { error: stateError } = await supabase.from("room_state").upsert({
-        room_id: room.id,
-        state_json: initialState,
-        operation_count: 0,
-        updated_at: new Date().toISOString()
-      });
+      const stateError = await persistRoomState(initialState, { operationCount: 0, mode: "upsert" });
 
       if (stateError) {
         console.error(stateError);
@@ -1894,14 +2066,7 @@ if (existingMemberInDb) {
       }
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -2045,14 +2210,7 @@ if (existingMemberInDb) {
       stacks: nextStacks
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -2194,14 +2352,7 @@ if (existingMemberInDb) {
       }
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -2333,14 +2484,7 @@ if (existingMemberInDb) {
       stacks: nextStacks
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -2427,14 +2571,7 @@ if (existingMemberInDb) {
       }
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -2495,14 +2632,7 @@ if (existingMemberInDb) {
       cardInstances: nextCardInstances
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -2583,14 +2713,7 @@ if (existingMemberInDb) {
       }
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -2659,14 +2782,7 @@ if (existingMemberInDb) {
       }
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -2800,14 +2916,7 @@ if (existingMemberInDb) {
       stacks: nextStacks
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -2891,14 +3000,7 @@ if (existingMemberInDb) {
       }
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -2940,14 +3042,7 @@ if (existingMemberInDb) {
       }
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 0,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room.id);
+    const error = await persistRoomState(nextState, { operationCount: 0 });
 
     if (error) {
       console.error("確認中状態の保存エラー:", error);
@@ -2970,14 +3065,7 @@ if (existingMemberInDb) {
       checkingStatus: null
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 0,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room.id);
+    const error = await persistRoomState(nextState, { operationCount: 0 });
 
     if (error) {
       console.error("確認中状態の解除エラー:", error);
@@ -3022,14 +3110,7 @@ if (existingMemberInDb) {
       }
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -3204,14 +3285,7 @@ if (existingMemberInDb) {
       cardInstances: nextCardInstances
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -3316,14 +3390,7 @@ if (existingMemberInDb) {
       }
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -3771,14 +3838,7 @@ async function inspectDeckAndSelect(
       cardInstances: nextCardInstances
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -3844,14 +3904,7 @@ async function inspectDeckAndSelect(
       }
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -3946,14 +3999,7 @@ async function inspectDeckAndSelect(
       }
     };
 
-    const { error } = await supabase
-      .from("room_state")
-      .update({
-        state_json: nextState,
-        operation_count: 1,
-        updated_at: new Date().toISOString()
-      })
-      .eq("room_id", room!.id);
+    const error = await persistRoomState(nextState, { operationCount: 1 });
 
     if (error) {
       console.error(error);
@@ -4000,7 +4046,19 @@ async function inspectDeckAndSelect(
           table: "room_state",
           filter: `room_id=eq.${room.id}`
         },
-        () => {
+        (payload) => {
+          const newRow = payload.new as Partial<RoomStateRow> | null;
+          const updatedAt = toTimeValue(newRow?.updated_at);
+          const operationCount = newRow?.operation_count ?? 0;
+
+          if (
+            updatedAt > 0 &&
+            updatedAt < lastAcceptedRoomStateUpdatedAtRef.current &&
+            operationCount <= lastAcceptedOperationCountRef.current
+          ) {
+            return;
+          }
+
           scheduleRealtimeReload();
         }
       )
@@ -4036,6 +4094,9 @@ async function inspectDeckAndSelect(
         realtimeReloadTimerRef.current = null;
       }
 
+      realtimeReloadQueuedRef.current = false;
+      realtimeReloadInFlightRef.current = false;
+
       supabase.removeChannel(channel);
     };
   }, [room?.id]);
@@ -4061,13 +4122,13 @@ async function inspectDeckAndSelect(
     const syncAfterReturn = () => {
       if (document.visibilityState === "visible") {
         void updateMyLastSeen();
-        void loadRoom();
+        void loadRoom({ silent: true });
       }
     };
 
     const syncAfterFocus = () => {
       void updateMyLastSeen();
-      void loadRoom();
+      void loadRoom({ silent: true });
     };
 
     document.addEventListener("visibilitychange", syncAfterReturn);

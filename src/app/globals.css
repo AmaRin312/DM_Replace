@@ -485,6 +485,60 @@ textarea {
     0 0 16px rgba(96, 165, 250, 0.28) !important;
 }
 
+
+
+/* =========================
+   Comfort / Performance
+========================= */
+
+.replace-card,
+.replace-panel,
+.replace-form-panel {
+  content-visibility: auto;
+  contain-intrinsic-size: 240px;
+}
+
+.dm-card,
+.hand-card,
+.modal-card-face img {
+  image-rendering: auto;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.operation-guide-popup,
+.spectator-panel,
+.viewer-zone,
+.operation-log-panel {
+  overscroll-behavior: contain;
+}
+
+@media (pointer: coarse) {
+  button,
+  .replace-button,
+  .primary-button,
+  .secondary-button,
+  .soft-link {
+    min-height: 44px;
+  }
+
+  .dm-card,
+  .hand-card {
+    touch-action: manipulation;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 /* =========================
    Responsive
 ========================= */

@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, useEffect, useRef, useState } from "react";
+import { CSSProperties, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, TouchEvent } from "react";
 import type { CardInstance, PlayerSide, RoomState, Zone } from "@/types/roomState";
 import {
@@ -134,6 +134,20 @@ const ZONE_LABELS: Record<Zone, string> = {
 
 const SPECTATOR_FREE_SWITCH_LIMIT = 2;
 const SPECTATOR_SWITCH_COOLDOWN_MS = 20_000;
+
+const preloadedCardImageUrls = new Set<string>();
+
+function preloadCardImage(url: string) {
+  if (typeof window === "undefined") return;
+  if (!url || preloadedCardImageUrls.has(url)) return;
+
+  preloadedCardImageUrls.add(url);
+
+  const image = new Image();
+  image.decoding = "async";
+  image.src = url;
+}
+
 
 function getDeckVisibility(
   roomState: RoomState,
@@ -497,7 +511,38 @@ function getMenuPositionFromElement(element: HTMLElement) {
   };
 }
 
-function CardBox({
+function areCardBoxesEqual(
+  prev: Readonly<{
+    card: CardInstance;
+    displayName?: string;
+    selected: boolean;
+    canOperate: boolean;
+    canOpenViewer: boolean;
+    stackCount: number;
+    selectionOrder: number | null;
+  }>,
+  next: Readonly<{
+    card: CardInstance;
+    displayName?: string;
+    selected: boolean;
+    canOperate: boolean;
+    canOpenViewer: boolean;
+    stackCount: number;
+    selectionOrder: number | null;
+  }>
+) {
+  return (
+    prev.card === next.card &&
+    prev.displayName === next.displayName &&
+    prev.selected === next.selected &&
+    prev.canOperate === next.canOperate &&
+    prev.canOpenViewer === next.canOpenViewer &&
+    prev.stackCount === next.stackCount &&
+    prev.selectionOrder === next.selectionOrder
+  );
+}
+
+const CardBox = memo(function CardBox({
   card,
   displayName,
   selected,
@@ -524,6 +569,7 @@ function CardBox({
   const cardImageUrl = getCardThumbnailUrl(card);
   const canShowCardFace = canOpenViewer && !isHiddenDisplayName(displayName);
   const longPressTimerRef = useRef<number | null>(null);
+  const lastCardClickAtRef = useRef(0);
 
   function clearLongPressTimer() {
     if (!longPressTimerRef.current) return;
@@ -546,7 +592,7 @@ function CardBox({
     longPressTimerRef.current = window.setTimeout(() => {
       longPressTimerRef.current = null;
       onOpenTouchMenu(element, card);
-    }, 550);
+    }, 430);
   }
 
   useEffect(() => {
@@ -557,7 +603,12 @@ function CardBox({
 
   return (
     <div
-      onClick={onClickCard}
+      onClick={(event) => {
+        const now = Date.now();
+        if (now - lastCardClickAtRef.current < 120) return;
+        lastCardClickAtRef.current = now;
+        onClickCard(event);
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -577,6 +628,8 @@ function CardBox({
         background: "#050505",
         color: "#fff",
         aspectRatio: "63 / 88",
+        minWidth: 0,
+        contain: "layout paint",
         display: "grid",
         gap: 6,
         placeItems: "center",
@@ -611,6 +664,8 @@ function CardBox({
       {cardImageUrl && canShowCardFace ? (
         <img
           src={cardImageUrl}
+          draggable={false}
+          decoding="async"
           alt={displayName ?? card.name}
           loading="lazy"
           style={{
@@ -676,7 +731,7 @@ function CardBox({
       )}
     </div>
   );
-}
+}, areCardBoxesEqual);
 
 
 function CardDetailBlock({
@@ -712,6 +767,8 @@ function CardDetailBlock({
       {imageUrl ? (
         <img
           src={imageUrl}
+          draggable={false}
+          decoding="async"
           alt={card.name}
           loading="lazy"
           style={{
@@ -825,7 +882,7 @@ function ModalCardFace({
       {prefix && <span>{prefix}</span>}
 
       {imageUrl ? (
-        <img src={imageUrl} alt={card.name} loading="lazy" />
+        <img src={imageUrl} alt={card.name} loading="lazy" decoding="async" draggable={false} />
       ) : (
         <div className="modal-card-proxy">
           <strong>{card.name}</strong>
@@ -882,7 +939,7 @@ function DeckBox({
     longPressTimerRef.current = window.setTimeout(() => {
       longPressTimerRef.current = null;
       onOpenMultiDeckTouchMenu(element, player);
-    }, 550);
+    }, 430);
   }
 
   useEffect(() => {
@@ -1553,22 +1610,39 @@ export function SimpleBoard({
   const [spectatorViewMessage, setSpectatorViewMessage] = useState("");
   const [showOperationGuide, setShowOperationGuide] = useState(false);
 
-  const viewerStackIds = viewerCard
-    ? viewerCard.stackId
-      ? roomState.stacks[viewerCard.stackId] ?? [viewerCard.id]
-      : [viewerCard.id]
-    : [];
+  const viewerStackIds = useMemo(
+    () =>
+      viewerCard
+        ? viewerCard.stackId
+          ? roomState.stacks[viewerCard.stackId] ?? [viewerCard.id]
+          : [viewerCard.id]
+        : [],
+    [viewerCard, roomState.stacks]
+  );
 
-  const viewerStackCards = viewerStackIds
-    .map((cardId) => roomState.cardInstances[cardId])
-    .filter((card): card is CardInstance => Boolean(card));
+  const viewerStackCards = useMemo(
+    () =>
+      viewerStackIds
+        .map((cardId) => roomState.cardInstances[cardId])
+        .filter((card): card is CardInstance => Boolean(card)),
+    [viewerStackIds, roomState.cardInstances]
+  );
 
-  const selectedCompareCards = selectedCardIds
-    .map((cardId) => roomState.cardInstances[cardId])
-    .filter((card): card is CardInstance => Boolean(card));
+  const selectedCompareCards = useMemo(
+    () =>
+      selectedCardIds
+        .map((cardId) => roomState.cardInstances[cardId])
+        .filter((card): card is CardInstance => Boolean(card)),
+    [selectedCardIds, roomState.cardInstances]
+  );
 
-  const selectedSingleCard =
-    selectedCardIds.length === 1 ? roomState.cardInstances[selectedCardIds[0]] ?? null : null;
+  const selectedSingleCard = useMemo(
+    () =>
+      selectedCardIds.length === 1
+        ? roomState.cardInstances[selectedCardIds[0]] ?? null
+        : null,
+    [selectedCardIds, roomState.cardInstances]
+  );
 
   const canUseSingleCardQuickActions =
     myRole !== null &&
@@ -1588,12 +1662,15 @@ export function SimpleBoard({
     selectedCardsBelongToMe &&
     !isInteractionDisabled;
 
-  const selectedCardsSummary =
-    selectedCompareCards.length > 0
-      ? selectedCompareCards
-          .map((card, index) => `${index + 1}. ${getVisibleCardName(card, myRole)}`)
-          .join(" / ")
-      : "";
+  const selectedCardsSummary = useMemo(
+    () =>
+      selectedCompareCards.length > 0
+        ? selectedCompareCards
+            .map((card, index) => `${index + 1}. ${getVisibleCardName(card, myRole)}`)
+            .join(" / ")
+        : "",
+    [selectedCompareCards, myRole]
+  );
 
   const checkingStatus = getCheckingStatus(roomState);
 
@@ -1631,25 +1708,85 @@ export function SimpleBoard({
     SPECTATOR_FREE_SWITCH_LIMIT - spectatorSwitchCount
   );
 
-  const boardOrder: PlayerSide[] =
-    myRole === "spectator"
-      ? spectatorViewerRole === "player1"
-        ? ["player2", "player1"]
-        : ["player1", "player2"]
-      : ["player2", "player1"];
-
-  const visibleBoardOrder = boardOrder.filter((player) => {
-    const board = roomState.players[player];
-    return (
-      board.deckOrder.length > 0 ||
-      board.hand.length > 0 ||
-      board.battle.length > 0 ||
-      board.mana.length > 0 ||
-      board.grave.length > 0 ||
-      board.shields.length > 0 ||
+  const boardOrder: PlayerSide[] = useMemo(
+    () =>
       myRole === "spectator"
+        ? spectatorViewerRole === "player1"
+          ? ["player2", "player1"]
+          : ["player1", "player2"]
+        : ["player2", "player1"],
+    [myRole, spectatorViewerRole]
+  );
+
+  const visibleBoardOrder = useMemo(
+    () =>
+      boardOrder.filter((player) => {
+        const board = roomState.players[player];
+        return (
+          board.deckOrder.length > 0 ||
+          board.hand.length > 0 ||
+          board.battle.length > 0 ||
+          board.mana.length > 0 ||
+          board.grave.length > 0 ||
+          board.shields.length > 0 ||
+          myRole === "spectator"
+        );
+      }),
+    [boardOrder, roomState.players, myRole]
+  );
+
+  useEffect(() => {
+    setSelectedCardIds((currentIds) => {
+      const nextIds = currentIds.filter((cardId) => Boolean(roomState.cardInstances[cardId]));
+      return nextIds.length === currentIds.length ? currentIds : nextIds;
+    });
+
+    setSelectedCard((currentCard) =>
+      currentCard && roomState.cardInstances[currentCard.id]
+        ? roomState.cardInstances[currentCard.id]
+        : null
     );
-  });
+
+    setViewerCard((currentCard) =>
+      currentCard && roomState.cardInstances[currentCard.id]
+        ? roomState.cardInstances[currentCard.id]
+        : null
+    );
+  }, [roomState.cardInstances]);
+
+  const visibleImageUrls = useMemo(() => {
+    const urls = new Set<string>();
+
+    visibleBoardOrder.forEach((player) => {
+      const board = roomState.players[player];
+      const visibleCardIds = [
+        ...board.battle,
+        ...board.mana,
+        ...board.grave,
+        ...board.hand,
+        ...board.shields.flatMap((stack) => stack)
+      ];
+
+      visibleCardIds.forEach((cardId) => {
+        const card = roomState.cardInstances[cardId];
+        if (!card) return;
+
+        const imageUrl = getCardThumbnailUrl(card);
+        if (imageUrl) urls.add(imageUrl);
+      });
+    });
+
+    viewerStackCards.forEach((card) => {
+      const imageUrl = getCardViewerImageUrl(card);
+      if (imageUrl) urls.add(imageUrl);
+    });
+
+    return Array.from(urls).slice(0, 120);
+  }, [visibleBoardOrder, roomState.players, roomState.cardInstances, viewerStackCards]);
+
+  useEffect(() => {
+    visibleImageUrls.forEach(preloadCardImage);
+  }, [visibleImageUrls]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -2250,18 +2387,20 @@ export function SimpleBoard({
     return { upperPlayer: "player2", lowerPlayer: "player1" };
   }
 
-  function getTopShieldCardIds(player: PlayerSide) {
-    return roomState.players[player].shields
-      .map((stack) => stack[stack.length - 1])
-      .filter(Boolean);
-  }
+  const getTopShieldCardIds = useCallback(
+    (player: PlayerSide) =>
+      roomState.players[player].shields
+        .map((stack) => stack[stack.length - 1])
+        .filter(Boolean),
+    [roomState.players]
+  );
 
-  function handleHtmlCardClick(
+  const handleHtmlCardClick = useCallback((
     event: MouseEvent<HTMLDivElement>,
     card: CardInstance,
     canOperate: boolean,
     canOpenViewer: boolean
-  ) {
+  ) => {
     if (!canOperate) {
       setMenuState(null);
       setSelectedCard(null);
@@ -2291,7 +2430,7 @@ export function SimpleBoard({
 
     setSelectedCard(card);
     setSelectedCardIds([card.id]);
-  }
+  }, [selectedCard?.id, selectedCardIds]);
 
   function renderHtmlCard(
     cardId: string,
@@ -2552,7 +2691,10 @@ export function SimpleBoard({
     );
   }
 
-  const { upperPlayer, lowerPlayer } = getDisplayPlayers();
+  const { upperPlayer, lowerPlayer } = useMemo(
+    () => getDisplayPlayers(),
+    [myRole, spectatorViewerRole]
+  );
   const upperBoard = roomState.players[upperPlayer];
   const lowerBoard = roomState.players[lowerPlayer];
   const viewerMainCard = viewerCard ?? (selectedCompareCards.length > 0 ? selectedCompareCards[0] : null);
