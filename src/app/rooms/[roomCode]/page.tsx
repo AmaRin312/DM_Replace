@@ -1333,9 +1333,35 @@ if (existingMemberInDb) {
           return [] as RoomMember[];
         }
 
-        return ((data ?? []) as Array<Omit<RoomMember, "profiles">>).map((member) => ({
+        const baseMembers = (data ?? []) as Array<Omit<RoomMember, "profiles">>;
+        const profileIds = Array.from(new Set(baseMembers.map((member) => member.user_id).filter(Boolean)));
+
+        let profileMap = new Map<string, { nickname: string | null; role: string }>();
+
+        if (profileIds.length > 0) {
+          const { data: profileRows, error: profileReadError } = await supabase
+            .from("profiles")
+            .select("id, nickname, role")
+            .in("id", profileIds);
+
+          if (profileReadError) {
+            console.warn("参加者プロフィール取得エラー:", profileReadError);
+          } else {
+            profileMap = new Map(
+              ((profileRows ?? []) as Array<{ id: string; nickname: string | null; role: string | null }>).map((profileRow) => [
+                profileRow.id,
+                {
+                  nickname: profileRow.nickname ?? null,
+                  role: profileRow.role ?? "user"
+                }
+              ])
+            );
+          }
+        }
+
+        return baseMembers.map((member) => ({
           ...member,
-          profiles: null
+          profiles: profileMap.get(member.user_id) ?? null
         })) as RoomMember[];
       };
 
@@ -4151,6 +4177,31 @@ async function inspectDeckAndSelect(
           .join("、")
       : "なし";
 
+  const player1Name = player1?.profiles?.nickname ?? (player1 ? "player1" : "未入室");
+  const player2Name = player2?.profiles?.nickname ?? (player2 ? "player2" : "未入室");
+  const player1DeckReady = Boolean(player1?.selected_deck_id);
+  const player2DeckReady = Boolean(player2?.selected_deck_id);
+  const canStartMatch =
+    !isStaleClient &&
+    !isBoardOperationPending &&
+    room?.status === "waiting" &&
+    myRole === "player1" &&
+    Boolean(player1) &&
+    Boolean(player2) &&
+    player1DeckReady &&
+    player2DeckReady;
+
+  const startMatchHelpText = (() => {
+    if (room?.status !== "waiting") return "対戦開始後は開始ボタンは表示されません。";
+    if (myRole !== "player1") return "対戦開始はplayer1のみ実行できます。";
+    if (!player2) return "player2の入室待ちです。";
+    if (!player1DeckReady) return "player1の使用デッキが未選択です。";
+    if (!player2DeckReady) return "player2の使用デッキが未選択です。";
+    if (isStaleClient) return "接続状態を更新してください。";
+    if (isBoardOperationPending) return "盤面操作の完了待ちです。";
+    return "両者の準備が完了しています。";
+  })();
+
   const canUseRoomActions =
     !isStaleClient &&
     (myRole === "player1" || myRole === "player2" || myRole === "spectator");
@@ -4290,7 +4341,7 @@ async function inspectDeckAndSelect(
           <span style={{ color: "#94a3b8" }}>あなた：{myRole ?? "未参加"}</span>
         </section>
 
-        {room.status === "waiting" && myRole === "player1" && (
+        {room.status === "waiting" && (myRole === "player1" || myRole === "player2") && (
           <section
             style={{
               border: "1px solid #2563eb",
@@ -4304,11 +4355,50 @@ async function inspectDeckAndSelect(
           >
             準備盤面です。
             <br />
-            player1だけが自分のデッキを操作できます。
-            <br />
-            player2も使用デッキから自分の盤面をリセットできます。
+            player1/player2は使用デッキから自分の盤面をリセットできます。
           </section>
         )}
+
+        <section
+          style={{
+            border: "1px solid #444",
+            borderRadius: 10,
+            padding: 8,
+            background: "#111",
+            color: "#e5e7eb",
+            display: "grid",
+            gap: 6,
+            fontSize: 12
+          }}
+        >
+          <strong>入室状況</strong>
+          <div style={{ display: "grid", gap: 4 }}>
+            <span>player1：{player1Name} {player1 ? "🟢" : "⚪"}</span>
+            <span style={{ color: player1DeckReady ? "#86efac" : "#fca5a5" }}>
+              デッキ：{player1DeckReady ? "選択済み" : "未選択"}
+            </span>
+            <span>player2：{player2Name} {player2 ? "🟢" : "⚪"}</span>
+            <span style={{ color: player2 ? player2DeckReady ? "#86efac" : "#fca5a5" : "#94a3b8" }}>
+              デッキ：{player2 ? player2DeckReady ? "選択済み" : "未選択" : "未入室"}
+            </span>
+          </div>
+          {room.status === "waiting" && myRole === "player1" && (
+            <button
+              type="button"
+              onClick={startMatch}
+              disabled={!canStartMatch || starting}
+              style={{
+                borderColor: canStartMatch ? "#22c55e" : "#444",
+                background: canStartMatch ? "#14532d" : "#202020",
+                color: canStartMatch ? "#bbf7d0" : "#cbd5e1",
+                fontWeight: 800
+              }}
+            >
+              {starting ? "開始中..." : "対戦開始"}
+            </button>
+          )}
+          <span style={{ color: "#94a3b8" }}>{startMatchHelpText}</span>
+        </section>
 
         <button
           type="button"
@@ -4331,6 +4421,19 @@ async function inspectDeckAndSelect(
             }
           >
             使用デッキ
+          </button>
+        )}
+
+        {room.status === "waiting" && myRole === "player1" && (
+          <button
+            type="button"
+            onClick={() =>
+              setActiveLeftPopup((current) =>
+                current === "start" ? null : "start"
+              )
+            }
+          >
+            対戦開始
           </button>
         )}
 
@@ -4460,17 +4563,12 @@ async function inspectDeckAndSelect(
 
           {activeLeftPopup === "participants" && (
             <section style={{ display: "grid", gap: 7, fontSize: 13 }}>
-              <div>player1：{player1?.profiles?.nickname ?? "未入室"}</div>
-              <div>デッキ：{player1?.selected_deck_id ? "選択済み" : "未選択"}</div>
+              <div>player1：{player1Name} {player1 ? "🟢入室中" : "⚪未入室"}</div>
+              <div>デッキ：{player1DeckReady ? "選択済み" : "未選択"}</div>
               <hr style={{ width: "100%", borderColor: "#333" }} />
-              <div>player2：{player2?.profiles?.nickname ?? "未入室"}</div>
+              <div>player2：{player2Name} {player2 ? "🟢入室中" : "⚪未入室"}</div>
               <div>
-                デッキ：
-                {player2
-                  ? player2.selected_deck_id
-                    ? "選択済み"
-                    : "未選択"
-                  : "未入室"}
+                デッキ：{player2 ? player2DeckReady ? "選択済み" : "未選択" : "未入室"}
               </div>
               <hr style={{ width: "100%", borderColor: "#333" }} />
               <div>観戦者：{spectators.length} / 3</div>
@@ -4511,7 +4609,28 @@ async function inspectDeckAndSelect(
             </section>
           )}
 
-
+          {activeLeftPopup === "start" && (
+            <section style={{ display: "grid", gap: 8, fontSize: 13 }}>
+              <div>player1：{player1Name} {player1DeckReady ? "✅" : "未選択"}</div>
+              <div>player2：{player2Name} {player2 ? player2DeckReady ? "✅" : "未選択" : "未入室"}</div>
+              <p style={{ margin: 0, color: canStartMatch ? "#86efac" : "#fca5a5" }}>
+                {startMatchHelpText}
+              </p>
+              <button
+                type="button"
+                onClick={startMatch}
+                disabled={!canStartMatch || starting}
+                style={{
+                  borderColor: canStartMatch ? "#22c55e" : "#444",
+                  background: canStartMatch ? "#14532d" : "#202020",
+                  color: canStartMatch ? "#bbf7d0" : "#cbd5e1",
+                  fontWeight: 800
+                }}
+              >
+                {starting ? "開始中..." : "対戦開始"}
+              </button>
+            </section>
+          )}
 
           <style>{`
             section button,
