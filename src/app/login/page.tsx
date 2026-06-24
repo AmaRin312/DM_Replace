@@ -1,15 +1,15 @@
+"use client";
+
 import { LoginButtons } from "@/components/auth/LoginButtons";
-import { useState } from "react";
 
 export default function LoginPage() {
-  const showMeaning =
-    typeof window !== "undefined"
-      ? () => {
-          if (confirm("意味を見たい？")) {
-            alert("『苦難を越えて星へ。』\n困難を乗り越えた先に成功や栄光がある、というラテン語の格言です。");
-          }
-        }
-      : undefined;
+  const showMeaning = () => {
+    if (confirm("意味を見たい？")) {
+      alert(
+        "『苦難を越えて星へ。』\n\nPer aspera ad astra.\n\n困難を乗り越えた先に成功や栄光がある、というラテン語の格言です。"
+      );
+    }
+  };
 
   return (
     <main className="replace-page">
@@ -24,10 +24,10 @@ export default function LoginPage() {
           className="replace-hero"
           style={{
             width: "min(640px, 100%)",
-            padding: 48,
+            padding: 36,
             textAlign: "center",
             display: "grid",
-            gap: 18,
+            gap: 14,
             justifyItems: "center"
           }}
         >
@@ -68,7 +68,7 @@ export default function LoginPage() {
           <div
             style={{
               width: "min(360px, 100%)",
-              marginTop: 12
+              marginTop: 8
             }}
           >
             <LoginButtons />
