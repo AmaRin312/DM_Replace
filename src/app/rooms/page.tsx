@@ -35,6 +35,12 @@ function statusLabel(status: string) {
   }
 }
 
+function showProverbMeaning(meaning: string) {
+  if (window.confirm("意味を見たい？")) {
+    window.alert(meaning);
+  }
+}
+
 function formatDate(value: string | null) {
   if (!value) return "-";
 
@@ -191,6 +197,13 @@ export default function RoomsPage() {
           <div>
             <p className="replace-kicker">ROOM</p>
             <h1>ルーム</h1>
+            <button
+              type="button"
+              className="due-proverb-button"
+              onClick={() => showProverbMeaning("ニンジンはもう煮えた。転じて『もう終わりだ』『万事休す』という意味です。")}
+            >
+              Les carottes sont cuites.
+            </button>
             <p>対戦ルームの作成・入室を行います。</p>
           </div>
 

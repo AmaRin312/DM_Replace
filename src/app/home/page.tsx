@@ -22,6 +22,12 @@ function canSeeAdmin(role: string | null | undefined) {
   return role === "owner" || role === "admin" || role === "editor" || role === "support";
 }
 
+function showProverbMeaning(meaning: string) {
+  if (window.confirm("意味を見たい？")) {
+    window.alert(meaning);
+  }
+}
+
 export default function HomePage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [counts, setCounts] = useState<HomeCounts>({ decks: null, rooms: null });
@@ -69,6 +75,13 @@ export default function HomePage() {
 
           <p className="replace-kicker">DM Replace</p>
           <h1>デュエルマスターズ Replace</h1>
+          <button
+            type="button"
+            className="due-proverb-button"
+            onClick={() => showProverbMeaning("人生そんなものさ。")}
+          >
+            C&apos;est la vie.
+          </button>
           <p className="hero-greeting">
             {loading ? "読み込み中..." : <>ようこそ、<strong>{profile?.nickname ?? "ゲスト"}</strong> さん</>}
           </p>

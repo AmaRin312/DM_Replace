@@ -31,6 +31,12 @@ function getAvatarIcon(avatarKey: string | null | undefined) {
   return AVATAR_OPTIONS.find((option) => option.key === avatarKey)?.icon ?? "👤";
 }
 
+function showProverbMeaning(meaning: string) {
+  if (window.confirm("意味を見たい？")) {
+    window.alert(meaning);
+  }
+}
+
 function getFileExtension(file: File) {
   const fromName = file.name.split(".").pop()?.toLowerCase();
 
@@ -228,6 +234,13 @@ export default function ProfilePage() {
           <div>
             <p className="replace-kicker">PROFILE</p>
             <h1>プロフィール編集</h1>
+            <button
+              type="button"
+              className="due-proverb-button"
+              onClick={() => showProverbMeaning("眠ったエビは流される。転じて『ぼんやりしているとチャンスを逃す』という意味です。")}
+            >
+              Camarón que se duerme se lo lleva la corriente.
+            </button>
             <p className="replace-sub">
               対戦ルームや観戦者一覧で表示する名前、アイコン、一言挨拶を設定します。
             </p>

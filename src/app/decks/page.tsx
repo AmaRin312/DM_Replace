@@ -1,4 +1,12 @@
+"use client";
+
 import Link from "next/link";
+
+function showProverbMeaning(meaning: string) {
+  if (window.confirm("意味を見たい？")) {
+    window.alert(meaning);
+  }
+}
 
 function MenuCard({
   href,
@@ -37,6 +45,13 @@ export default function DecksPage() {
           <div>
             <p className="replace-kicker">DECK</p>
             <h1>デッキ管理</h1>
+            <button
+              type="button"
+              className="due-proverb-button"
+              onClick={() => showProverbMeaning("これでサラダができた。転じて『やっちまった』『面倒なことになった』という意味です。")}
+            >
+              Jetzt haben wir den Salat.
+            </button>
             <p className="replace-sub">
               デッキの新規作成、保存済みデッキの編集、デッキコードからの作成を行います。
             </p>
