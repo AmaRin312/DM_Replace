@@ -2289,27 +2289,34 @@ if (existingMemberInDb) {
       return;
     }
 
-    if (card.zone !== "hand") {
-      setMessage("手札のカードのみ重ねて出せます。");
+    if (card.zone === "deck" || card.zone === "shield") {
+      setMessage("山札・シールドのカードは直接重ね出しできません。");
       return;
     }
 
     const player = roomState!.players[card.owner];
 
-    if (player.battle.length === 0) {
-      setMessage("重ね先のバトルゾーンカードがありません。");
+    const targetCardIds = [
+      ...player.battle,
+      ...player.grave,
+      ...player.mana,
+      ...player.hand.filter((id) => id !== cardId)
+    ].filter((id, index, array) => array.indexOf(id) === index);
+
+    if (targetCardIds.length === 0) {
+      setMessage("重ね先にできるカードがありません。");
       return;
     }
 
-    const battleListText = player.battle
+    const targetListText = targetCardIds
       .map((id, index) => {
-        const battleCard = roomState!.cardInstances[id];
-        return `${index + 1}. ${battleCard?.name ?? "不明なカード"}`;
+        const target = roomState!.cardInstances[id];
+        return `${index + 1}. ${target?.name ?? "不明なカード"}（${target ? zoneLabel(target.zone) : "不明"}）`;
       })
       .join("\n");
 
     const raw = window.prompt(
-      `重ね先のカード番号を入力してください。\n\n${battleListText}`,
+      `重ね先のカード番号を入力してください。\n\n${targetListText}`,
       "1"
     );
 
@@ -2323,13 +2330,13 @@ if (existingMemberInDb) {
     if (
       !Number.isInteger(targetIndex) ||
       targetIndex < 0 ||
-      targetIndex >= player.battle.length
+      targetIndex >= targetCardIds.length
     ) {
       setMessage("有効なカード番号を入力してください。");
       return;
     }
 
-    const targetCardId = player.battle[targetIndex];
+    const targetCardId = targetCardIds[targetIndex];
     const targetCard = roomState!.cardInstances[targetCardId];
 
     if (!targetCard) {
@@ -2337,13 +2344,22 @@ if (existingMemberInDb) {
       return;
     }
 
+    const sourceZone = card.zone;
+    const targetZone = targetCard.zone;
     const stackId = targetCard.stackId ?? `stack_${targetCard.id}`;
     const currentStack = Array.from(new Set(roomState!.stacks[stackId] ?? [targetCard.id]));
 
+    const removeIds = new Set([cardId, targetCard.id]);
+    const removeFrom = (list: string[]) => list.filter((id) => !removeIds.has(id));
+
     const nextPlayer = {
       ...player,
-      hand: player.hand.filter((id) => id !== cardId),
-      battle: [...player.battle.filter((id) => id !== cardId && id !== targetCard.id), cardId]
+      deckOrder: removeFrom(player.deckOrder),
+      hand: removeFrom(player.hand),
+      battle: [...removeFrom(player.battle), cardId],
+      mana: removeFrom(player.mana),
+      grave: removeFrom(player.grave),
+      shields: removeCardsFromShieldStacks(player.shields, Array.from(removeIds))
     };
 
     rememberUndoSnapshot({
@@ -2361,6 +2377,10 @@ if (existingMemberInDb) {
         ...roomState!.cardInstances,
         [targetCard.id]: {
           ...targetCard,
+          zone: "battle",
+          faceUp: true,
+          tapped: false,
+          reversed: false,
           stackId
         },
         [cardId]: {
@@ -2388,12 +2408,14 @@ if (existingMemberInDb) {
 
     await saveOperationLog({
       eventType: "stack_card",
-      message: `${actorDisplayName(myProfile)}が手札のカードを「${targetCard.name}」に重ねて出しました。`,
+      message: `${actorDisplayName(myProfile)}が${zoneLabel(sourceZone)}のカードを${zoneLabel(targetZone)}のカードに重ねて出しました。`,
       payload: {
         cardInstanceId: cardId,
-        cardName: null,
+        cardName: shouldHideCardName(sourceZone) ? null : card.name,
         targetCardInstanceId: targetCard.id,
-        targetCardName: targetCard.name,
+        targetCardName: shouldHideCardName(targetZone) ? null : targetCard.name,
+        sourceZone,
+        targetZone,
         stackId
       }
     });
@@ -2847,6 +2869,481 @@ if (existingMemberInDb) {
     setRoomState(nextState);
     setMessage(`${card.name} を${actionLabel}。`);
   }
+
+
+  async function updateMultipleCardOrientation(
+    cardIds: string[],
+    kind: "tapped" | "reversed" | "faceUp"
+  ) {
+    if (!room || !roomState) return;
+
+    if (!myRole || myRole === "spectator") {
+      setMessage("観戦者はカードを操作できません。");
+      return;
+    }
+
+    const uniqueCardIds = Array.from(new Set(cardIds));
+    const cards = uniqueCardIds
+      .map((cardId) => roomState.cardInstances[cardId])
+      .filter((card): card is NonNullable<typeof card> => Boolean(card));
+
+    if (cards.length !== uniqueCardIds.length) {
+      setMessage("選択されたカードの一部が見つかりません。");
+      return;
+    }
+
+    if (cards.some((card) => card.owner !== myRole)) {
+      setMessage("自分のカードのみ向き変更できます。");
+      return;
+    }
+
+    const shouldSetTrue = cards.some((card) => !Boolean(card[kind]));
+    const nextCardInstances = { ...roomState.cardInstances };
+
+    uniqueCardIds.forEach((cardId) => {
+      const card = nextCardInstances[cardId];
+      if (!card) return;
+
+      nextCardInstances[cardId] = {
+        ...card,
+        [kind]: shouldSetTrue
+      };
+    });
+
+    rememberUndoSnapshot({
+      eventType: "card_state",
+      message: `カード${uniqueCardIds.length}枚の状態変更`
+    });
+
+    const nextState: RoomState = {
+      ...roomState,
+      cardInstances: nextCardInstances
+    };
+
+    const error = await persistRoomState(nextState, { operationCount: 1 });
+
+    if (error) {
+      console.error(error);
+      setMessage("複数カードの状態変更に失敗しました。");
+      return;
+    }
+
+    const actionLabel =
+      kind === "tapped"
+        ? shouldSetTrue
+          ? "タップしました"
+          : "アンタップしました"
+        : kind === "reversed"
+          ? shouldSetTrue
+            ? "上下反転しました"
+            : "上下反転を解除しました"
+          : shouldSetTrue
+            ? "表向きにしました"
+            : "裏向きにしました";
+
+    await saveOperationLog({
+      eventType: "card_state",
+      message: `${actorDisplayName(myProfile)}がカード${uniqueCardIds.length}枚を${actionLabel}。`,
+      payload: {
+        cardInstanceIds: uniqueCardIds,
+        kind,
+        value: shouldSetTrue,
+        count: uniqueCardIds.length
+      }
+    });
+
+    setRoomState(nextState);
+    setMessage(`カード${uniqueCardIds.length}枚を${actionLabel}。`);
+  }
+
+  async function sealTopCard(targetCardId: string) {
+    if (!canChangeBoardState("封印")) return;
+
+    if (!myRole || myRole === "spectator") return;
+
+    const targetCard = roomState!.cardInstances[targetCardId];
+
+    if (!targetCard) {
+      setMessage("封印先のカードが見つかりません。");
+      return;
+    }
+
+    if (targetCard.owner !== myRole || targetCard.zone !== "battle") {
+      setMessage("自分のバトルゾーンのカードにのみ封印できます。");
+      return;
+    }
+
+    const player = roomState!.players[myRole];
+    const sealCardId = player.deckOrder[0];
+
+    if (!sealCardId) {
+      setMessage("山札がありません。封印できません。");
+      return;
+    }
+
+    const sealCard = roomState!.cardInstances[sealCardId];
+
+    if (!sealCard) {
+      setMessage("山札上のカードが見つかりません。");
+      return;
+    }
+
+    const stackId = targetCard.stackId ?? `stack_${targetCard.id}`;
+    const currentStack = Array.from(new Set(roomState!.stacks[stackId] ?? [targetCard.id]));
+    const nextStack = [...currentStack.filter((id) => id !== sealCardId), sealCardId];
+
+    const topBeforeSeal = currentStack[currentStack.length - 1] ?? targetCard.id;
+    const nextBattle = [
+      ...player.battle.filter((id) => id !== sealCardId && id !== topBeforeSeal && id !== targetCard.id),
+      sealCardId
+    ];
+
+    rememberUndoSnapshot({
+      eventType: "seal_from_deck",
+      message: "山札上から封印"
+    });
+
+    const nextState: RoomState = {
+      ...roomState!,
+      players: {
+        ...roomState!.players,
+        [myRole]: {
+          ...player,
+          deckOrder: player.deckOrder.slice(1),
+          battle: nextBattle
+        }
+      },
+      cardInstances: {
+        ...roomState!.cardInstances,
+        [targetCard.id]: {
+          ...targetCard,
+          stackId
+        },
+        [sealCardId]: {
+          ...sealCard,
+          zone: "battle",
+          faceUp: false,
+          tapped: false,
+          reversed: false,
+          stackId
+        }
+      },
+      stacks: {
+        ...roomState!.stacks,
+        [stackId]: nextStack
+      }
+    };
+
+    const error = await persistRoomState(nextState, { operationCount: 1 });
+
+    if (error) {
+      console.error(error);
+      setMessage("封印に失敗しました。");
+      return;
+    }
+
+    await saveOperationLog({
+      eventType: "seal_from_deck",
+      message: `${actorDisplayName(myProfile)}が山札上からカードを封印しました。`,
+      payload: {
+        targetCardInstanceId: targetCard.id,
+        sealCardInstanceId: sealCardId,
+        stackId
+      }
+    });
+
+    setRoomState(nextState);
+    setMessage("山札上から封印しました。");
+  }
+
+  async function moveTopStackCardToGrave(cardId: string) {
+    if (!canChangeBoardState("封印を墓地へ")) return;
+
+    if (!myRole || myRole === "spectator") return;
+
+    const selectedCard = roomState!.cardInstances[cardId];
+
+    if (!selectedCard) {
+      setMessage("カードが見つかりません。");
+      return;
+    }
+
+    if (selectedCard.owner !== myRole || selectedCard.zone !== "battle") {
+      setMessage("自分のバトルゾーンのカードのみ操作できます。");
+      return;
+    }
+
+    const stackId = selectedCard.stackId;
+
+    if (!stackId) {
+      setMessage("このカードには封印または進化元がありません。");
+      return;
+    }
+
+    const currentStack = roomState!.stacks[stackId] ?? [];
+    const sealCardId = currentStack[currentStack.length - 1];
+
+    if (!sealCardId || currentStack.length < 2) {
+      setMessage("墓地へ送れる封印がありません。");
+      return;
+    }
+
+    const sealCard = roomState!.cardInstances[sealCardId];
+
+    if (!sealCard) {
+      setMessage("封印カードが見つかりません。");
+      return;
+    }
+
+    const remainingStack = currentStack.slice(0, -1);
+    const newTopCardId = remainingStack[remainingStack.length - 1];
+
+    if (!newTopCardId) {
+      setMessage("封印解除後に残るカードを確認できませんでした。");
+      return;
+    }
+
+    const player = roomState!.players[myRole];
+    const nextCardInstances = { ...roomState!.cardInstances };
+
+    nextCardInstances[sealCardId] = {
+      ...sealCard,
+      zone: "grave",
+      faceUp: true,
+      tapped: false,
+      reversed: false,
+      stackId: null
+    };
+
+    remainingStack.forEach((remainingId) => {
+      const remainingCard = nextCardInstances[remainingId];
+      if (!remainingCard) return;
+
+      nextCardInstances[remainingId] = {
+        ...remainingCard,
+        stackId: remainingStack.length >= 2 ? stackId : null
+      };
+    });
+
+    const nextStacks = { ...roomState!.stacks };
+
+    if (remainingStack.length >= 2) {
+      nextStacks[stackId] = remainingStack;
+    } else {
+      delete nextStacks[stackId];
+    }
+
+    rememberUndoSnapshot({
+      eventType: "seal_to_grave",
+      message: "封印を墓地へ"
+    });
+
+    const nextState: RoomState = {
+      ...roomState!,
+      players: {
+        ...roomState!.players,
+        [myRole]: {
+          ...player,
+          battle: [...player.battle.filter((id) => id !== sealCardId && id !== newTopCardId), newTopCardId],
+          grave: [...player.grave.filter((id) => id !== sealCardId), sealCardId]
+        }
+      },
+      cardInstances: nextCardInstances,
+      stacks: nextStacks
+    };
+
+    const error = await persistRoomState(nextState, { operationCount: 1 });
+
+    if (error) {
+      console.error(error);
+      setMessage("封印を墓地へ送る処理に失敗しました。");
+      return;
+    }
+
+    await saveOperationLog({
+      eventType: "seal_to_grave",
+      message: `${actorDisplayName(myProfile)}が封印を墓地へ送りました。`,
+      payload: {
+        sealCardInstanceId: sealCardId,
+        stackId
+      }
+    });
+
+    setRoomState(nextState);
+    setMessage("封印を墓地へ送りました。");
+  }
+
+  async function moveStackSourceOnly(cardId: string, toZone: Zone) {
+    if (!canChangeBoardState("進化元移動")) return;
+
+    if (!myRole || myRole === "spectator") return;
+
+    const selectedCard = roomState!.cardInstances[cardId];
+
+    if (!selectedCard) {
+      setMessage("カードが見つかりません。");
+      return;
+    }
+
+    if (selectedCard.owner !== myRole || selectedCard.zone !== "battle") {
+      setMessage("自分のバトルゾーンの進化カードのみ操作できます。");
+      return;
+    }
+
+    const stackId = selectedCard.stackId;
+
+    if (!stackId) {
+      setMessage("このカードには進化元がありません。");
+      return;
+    }
+
+    const currentStack = roomState!.stacks[stackId] ?? [];
+
+    if (currentStack.length < 2) {
+      setMessage("移動できる進化元がありません。");
+      return;
+    }
+
+    const movableSourceIds = currentStack.slice(0, -1);
+    const sourceListText = movableSourceIds
+      .map((id, index) => {
+        const sourceCard = roomState!.cardInstances[id];
+        return `${index + 1}. ${sourceCard?.name ?? "不明なカード"}`;
+      })
+      .join("\n");
+
+    const raw =
+      movableSourceIds.length === 1
+        ? "1"
+        : window.prompt(
+            `移動する進化元の番号を入力してください。\n\n${sourceListText}`,
+            "1"
+          );
+
+    if (raw === null) {
+      setMessage("進化元移動をキャンセルしました。");
+      return;
+    }
+
+    const sourceIndex = Number.parseInt(raw, 10) - 1;
+
+    if (
+      !Number.isInteger(sourceIndex) ||
+      sourceIndex < 0 ||
+      sourceIndex >= movableSourceIds.length
+    ) {
+      setMessage("有効な番号を入力してください。");
+      return;
+    }
+
+    const sourceCardId = movableSourceIds[sourceIndex];
+    const sourceCard = roomState!.cardInstances[sourceCardId];
+
+    if (!sourceCard) {
+      setMessage("進化元カードが見つかりません。");
+      return;
+    }
+
+    const remainingStack = currentStack.filter((id) => id !== sourceCardId);
+    const player = roomState!.players[myRole];
+    const nextCardInstances = { ...roomState!.cardInstances };
+
+    nextCardInstances[sourceCardId] = {
+      ...sourceCard,
+      zone: toZone,
+      faceUp: toZone === "battle" || toZone === "mana" || toZone === "grave",
+      tapped: false,
+      reversed: false,
+      stackId: null
+    };
+
+    remainingStack.forEach((remainingId) => {
+      const remainingCard = nextCardInstances[remainingId];
+      if (!remainingCard) return;
+
+      nextCardInstances[remainingId] = {
+        ...remainingCard,
+        stackId: remainingStack.length >= 2 ? stackId : null
+      };
+    });
+
+    const removeFrom = (list: string[]) => list.filter((id) => id !== sourceCardId);
+
+    const nextPlayer = {
+      ...player,
+      deckOrder: removeFrom(player.deckOrder),
+      hand: removeFrom(player.hand),
+      battle: player.battle,
+      mana: removeFrom(player.mana),
+      grave: removeFrom(player.grave),
+      shields: removeCardFromShieldStacks(player.shields, sourceCardId)
+    };
+
+    if (toZone === "hand") {
+      nextPlayer.hand = [...nextPlayer.hand, sourceCardId];
+    }
+
+    if (toZone === "battle") {
+      nextPlayer.battle = [...nextPlayer.battle.filter((id) => id !== sourceCardId), sourceCardId];
+    }
+
+    if (toZone === "mana") {
+      nextPlayer.mana = [...nextPlayer.mana, sourceCardId];
+    }
+
+    if (toZone === "grave") {
+      nextPlayer.grave = [...nextPlayer.grave, sourceCardId];
+    }
+
+    if (toZone === "shield") {
+      nextPlayer.shields = [...nextPlayer.shields, [sourceCardId]];
+    }
+
+    const nextStacks = { ...roomState!.stacks };
+
+    if (remainingStack.length >= 2) {
+      nextStacks[stackId] = remainingStack;
+    } else {
+      delete nextStacks[stackId];
+    }
+
+    rememberUndoSnapshot({
+      eventType: "move_evolution_source",
+      message: `進化元を${zoneLabel(toZone)}へ移動`
+    });
+
+    const nextState: RoomState = {
+      ...roomState!,
+      players: {
+        ...roomState!.players,
+        [myRole]: nextPlayer
+      },
+      cardInstances: nextCardInstances,
+      stacks: nextStacks
+    };
+
+    const error = await persistRoomState(nextState, { operationCount: 1 });
+
+    if (error) {
+      console.error(error);
+      setMessage("進化元の移動に失敗しました。");
+      return;
+    }
+
+    await saveOperationLog({
+      eventType: "move_evolution_source",
+      message: `${actorDisplayName(myProfile)}が進化元を${zoneLabel(toZone)}へ移動しました。`,
+      payload: {
+        sourceCardInstanceId: sourceCardId,
+        stackId,
+        toZone
+      }
+    });
+
+    setRoomState(nextState);
+    setMessage(`進化元を${zoneLabel(toZone)}へ移動しました。`);
+  }
+
 
   async function moveCardToDeck(
     cardId: string,
@@ -4699,6 +5196,7 @@ async function inspectDeckAndSelect(
             onToggleTapped={(cardId) => updateCardOrientation(cardId, "tapped")}
             onToggleReversed={(cardId) => updateCardOrientation(cardId, "reversed")}
             onToggleFaceUp={(cardId) => updateCardOrientation(cardId, "faceUp")}
+            onToggleMultipleCardOrientation={updateMultipleCardOrientation}
             onMoveCardToDeckTop={(cardId) => moveCardToDeck(cardId, "top")}
             onMoveCardToDeckBottom={(cardId) => moveCardToDeck(cardId, "bottom")}
             onMoveCardToDeckAndShuffle={(cardId) => moveCardToDeck(cardId, "shuffle")}
@@ -4715,6 +5213,9 @@ async function inspectDeckAndSelect(
             onInspectDeckSelectModal={inspectDeckSelectModal}
             onStackCardToBattle={stackCardToBattle}
             onMoveMultipleCards={moveMultipleCards}
+            onSealTopCard={sealTopCard}
+            onMoveTopStackCardToGrave={moveTopStackCardToGrave}
+            onMoveStackSourceOnly={moveStackSourceOnly}
             onSetDeckVisibility={setDeckVisibilityStatus}
             onStartCheckingStatus={startCheckingStatus}
             onClearCheckingStatus={clearCheckingStatus}

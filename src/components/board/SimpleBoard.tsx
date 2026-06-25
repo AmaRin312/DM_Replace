@@ -27,7 +27,13 @@ type BoardMenuAction =
   | "deck_public"
   | "deck_private"
   | "deck_lock"
-  | "toggle_face_up";
+  | "toggle_face_up"
+  | "seal_from_deck"
+  | "seal_to_grave"
+  | "source_to_hand"
+  | "source_to_shield"
+  | "source_to_mana"
+  | "source_to_grave";
 
 type SimpleBoardProps = {
   roomState: RoomState;
@@ -42,6 +48,10 @@ type SimpleBoardProps = {
   onToggleTapped: (cardId: string) => void;
   onToggleReversed: (cardId: string) => void;
   onToggleFaceUp: (cardId: string) => void;
+  onToggleMultipleCardOrientation?: (
+    cardIds: string[],
+    kind: "tapped" | "reversed" | "faceUp"
+  ) => void;
   onMoveCardToDeckTop: (cardId: string) => void;
   onMoveCardToDeckBottom: (cardId: string) => void;
   onMoveCardToDeckAndShuffle: (cardId: string) => void;
@@ -65,6 +75,9 @@ type SimpleBoardProps = {
   }) => void;
   onStackCardToBattle: (cardId: string) => void;
   onMoveMultipleCards: (cardIds: string[], toZone: Zone) => void;
+  onSealTopCard?: (targetCardId: string) => void;
+  onMoveTopStackCardToGrave?: (cardId: string) => void;
+  onMoveStackSourceOnly?: (cardId: string, toZone: Zone) => void;
   onSetDeckVisibility: (player: PlayerSide, status: DeckVisibility) => void;
   onStartCheckingStatus: (
     player: PlayerSide,
@@ -294,6 +307,18 @@ function createBattleMenu(): MenuNode {
     },
     d: {
       label: "その他",
+      w: {
+        label: "封印",
+        w: { label: "山札上から封印", action: "seal_from_deck" as MenuAction },
+        s: { label: "封印を墓地へ", action: "seal_to_grave" as MenuAction }
+      },
+      a: {
+        label: "進化元だけ移動",
+        w: { label: "手札", action: "source_to_hand" as MenuAction },
+        a: { label: "シールド", action: "source_to_shield" as MenuAction },
+        s: { label: "マナ", action: "source_to_mana" as MenuAction },
+        d: { label: "墓地", action: "source_to_grave" as MenuAction }
+      },
       d: {
         label: "山札に戻す",
         w: { label: "山札上", action: "move_deck_top" },
@@ -368,7 +393,12 @@ function createGraveMenu(): MenuNode {
 function createShieldMenu(): MenuNode {
   return {
     label: "シールド",
-    w: { label: "表向き/裏向き", action: "toggle_face_up" as MenuAction },
+    w: {
+      label: "向き変更",
+      w: { label: "タップ/アンタップ", action: "toggle_tapped" },
+      s: { label: "上下反転/解除", action: "toggle_reversed" },
+      d: { label: "表向き/裏向き", action: "toggle_face_up" as MenuAction }
+    },
     a: { label: "シールドブレイク", action: "break_shield" },
     s: {
       label: "ゾーン移動",
@@ -1574,6 +1604,7 @@ export function SimpleBoard({
   onToggleTapped,
   onToggleReversed,
   onToggleFaceUp,
+  onToggleMultipleCardOrientation,
   onMoveCardToDeckTop,
   onMoveCardToDeckBottom,
   onMoveCardToDeckAndShuffle,
@@ -1590,6 +1621,9 @@ export function SimpleBoard({
   onInspectDeckSelectModal,
   onStackCardToBattle,
   onMoveMultipleCards,
+  onSealTopCard,
+  onMoveTopStackCardToGrave,
+  onMoveStackSourceOnly,
   onSetDeckVisibility,
   onStartCheckingStatus,
   onClearCheckingStatus,
@@ -1976,6 +2010,34 @@ export function SimpleBoard({
     if (isInteractionDisabled) return;
 
     const multiMoveZone = getZoneFromCardAction(action);
+    const orientationKind =
+      action === "toggle_tapped"
+        ? "tapped"
+        : action === "toggle_reversed"
+          ? "reversed"
+          : action === "toggle_face_up"
+            ? "faceUp"
+            : null;
+
+    if (
+      orientationKind &&
+      selectedCardIds.length > 1 &&
+      selectedCardIds.includes(cardId)
+    ) {
+      if (onToggleMultipleCardOrientation) {
+        onToggleMultipleCardOrientation(selectedCardIds, orientationKind);
+      } else {
+        selectedCardIds.forEach((selectedId) => {
+          if (orientationKind === "tapped") onToggleTapped(selectedId);
+          if (orientationKind === "reversed") onToggleReversed(selectedId);
+          if (orientationKind === "faceUp") onToggleFaceUp(selectedId);
+        });
+      }
+
+      setSelectedCard(null);
+      setSelectedCardIds([]);
+      return;
+    }
 
     if (
       multiMoveZone &&
@@ -2043,6 +2105,24 @@ export function SimpleBoard({
         setShieldBreakModal({ card });
         return;
       }
+      case "seal_from_deck":
+        onSealTopCard?.(cardId);
+        return;
+      case "seal_to_grave":
+        onMoveTopStackCardToGrave?.(cardId);
+        return;
+      case "source_to_hand":
+        onMoveStackSourceOnly?.(cardId, "hand");
+        return;
+      case "source_to_shield":
+        onMoveStackSourceOnly?.(cardId, "shield");
+        return;
+      case "source_to_mana":
+        onMoveStackSourceOnly?.(cardId, "mana");
+        return;
+      case "source_to_grave":
+        onMoveStackSourceOnly?.(cardId, "grave");
+        return;
       default:
         console.info("未接続のカード操作:", action);
     }
