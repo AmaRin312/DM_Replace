@@ -1808,8 +1808,34 @@ export function SimpleBoard({
   }, [visibleImageUrls]);
 
   useEffect(() => {
+    function isTypingTarget(target: EventTarget | null) {
+      if (!(target instanceof HTMLElement)) return false;
+
+      const tagName = target.tagName.toLowerCase();
+      return (
+        tagName === "input" ||
+        tagName === "textarea" ||
+        tagName === "select" ||
+        target.isContentEditable
+      );
+    }
+
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
+      if (isTypingTarget(event.target)) return;
+
+      const key = event.key.toLowerCase();
+
+      if (key === "t" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        if (myRole === "player1" || myRole === "player2") {
+          event.preventDefault();
+          setMenuState(null);
+          onDrawCard(myRole);
+        }
+
+        return;
+      }
+
+      if (key !== "escape") return;
 
       event.preventDefault();
 
@@ -1863,6 +1889,7 @@ export function SimpleBoard({
     menuState,
     myRole,
     onCancelAllRevealedCards,
+    onDrawCard,
     selectedCardIds.length,
     graveModal,
     shieldBreakModal,

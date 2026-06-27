@@ -2818,10 +2818,17 @@ if (existingMemberInDb) {
       return;
     }
 
-    const nextCard = {
-      ...card,
-      [kind]: !Boolean(card[kind])
-    };
+    const nextCard =
+      kind === "tapped"
+        ? {
+            ...card,
+            tapped: !Boolean(card.tapped),
+            reversed: false
+          }
+        : {
+            ...card,
+            [kind]: !Boolean(card[kind])
+          };
 
     rememberUndoSnapshot({
       eventType: "card_state",
@@ -2921,10 +2928,17 @@ if (existingMemberInDb) {
       const card = nextCardInstances[cardId];
       if (!card) return;
 
-      nextCardInstances[cardId] = {
-        ...card,
-        [kind]: shouldSetTrue
-      };
+      nextCardInstances[cardId] =
+        kind === "tapped"
+          ? {
+              ...card,
+              tapped: shouldSetTrue,
+              reversed: false
+            }
+          : {
+              ...card,
+              [kind]: shouldSetTrue
+            };
     });
 
     rememberUndoSnapshot({
