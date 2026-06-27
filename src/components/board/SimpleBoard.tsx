@@ -9,7 +9,7 @@ import {
   type MenuNode
 } from "@/components/board/RightClickMenu";
 
-type DeckVisibility = "private" | "public" | "locked";
+type DeckVisibility = "private" | "public";
 
 type CheckingStatus = {
   player: PlayerSide;
@@ -26,7 +26,6 @@ type BoardMenuAction =
   | MenuAction
   | "deck_public"
   | "deck_private"
-  | "deck_lock"
   | "toggle_face_up"
   | "seal_from_deck"
   | "seal_to_grave"
@@ -166,16 +165,14 @@ function getDeckVisibility(
   roomState: RoomState,
   player: PlayerSide
 ): DeckVisibility {
-  return ((roomState as ExtendedRoomState).deckVisibility?.[player] ??
-    "private") as DeckVisibility;
+  const status = (roomState as ExtendedRoomState).deckVisibility?.[player];
+  return status === "public" ? "public" : "private";
 }
 
 function deckVisibilityLabel(status: DeckVisibility) {
   switch (status) {
     case "public":
       return "公開";
-    case "locked":
-      return "ロック";
     default:
       return "非公開";
   }
@@ -283,11 +280,7 @@ function isHiddenDisplayName(displayName: string | undefined) {
 }
 
 function isDeckStatusAction(action: BoardMenuAction) {
-  return (
-    action === "deck_public" ||
-    action === "deck_private" ||
-    action === "deck_lock"
-  );
+  return action === "deck_public" || action === "deck_private";
 }
 
 function createBattleMenu(): MenuNode {
@@ -422,7 +415,6 @@ function createDeckMenu(count: number): MenuNode {
       label: "状態変更",
       w: { label: "山札公開", action: "deck_public" as MenuAction },
       a: { label: "山札非公開", action: "deck_private" as MenuAction },
-      d: { label: "ロック", action: "deck_lock" as MenuAction }
     },
     a: {
       label: "山札操作",
@@ -944,7 +936,6 @@ function DeckBox({
   onOpenMultiDeckMenu: (event: MouseEvent<HTMLButtonElement>, player: PlayerSide) => void;
   onOpenMultiDeckTouchMenu: (element: HTMLElement, player: PlayerSide) => void;
 }) {
-  const isLocked = deckVisibility === "locked";
   const isPublic = deckVisibility === "public";
   const longPressTimerRef = useRef<number | null>(null);
 
@@ -988,7 +979,7 @@ function DeckBox({
         event.preventDefault();
         event.stopPropagation();
 
-        if (!canOperate || isLocked) return;
+        if (!canOperate) return;
 
         onOpenSingleDeckMenu(event, player);
       }}
@@ -1006,14 +997,10 @@ function DeckBox({
       onTouchMove={clearLongPressTimer}
       disabled={!canOperate && !isPublic}
       style={{
-        border: isLocked
-          ? "1px solid #f97316"
-          : isPublic
-            ? "1px solid #22c55e"
-            : "1px solid #555",
+        border: isPublic ? "1px solid #22c55e" : "1px solid #555",
         borderRadius: 10,
         padding: 12,
-        background: isLocked ? "#1f1308" : isPublic ? "#071a0f" : "#050505",
+        background: isPublic ? "#071a0f" : "#050505",
         color: "#fff",
         cursor: canOperate ? "context-menu" : isPublic ? "default" : "not-allowed",
         touchAction: canOperate ? "none" : "manipulation",
@@ -1027,7 +1014,7 @@ function DeckBox({
       <span
         style={{
           fontSize: 12,
-          color: isLocked ? "#fdba74" : isPublic ? "#86efac" : "#cbd5e1"
+          color: isPublic ? "#86efac" : "#cbd5e1"
         }}
       >
         状態：{deckVisibilityLabel(deckVisibility)}
@@ -1042,9 +1029,7 @@ function DeckBox({
         </>
       )}
       {canOperate
-        ? isLocked
-          ? "ロック中：右クリックで状態変更のみ可能"
-          : "ダブルクリック：1枚操作WASD / 右クリック・長押し：枚数指定WASD"
+        ? "ダブルクリック：1枚操作WASD / 右クリック・長押し：枚数指定WASD"
         : isPublic
           ? "公開中：山札上を確認できます"
           : "操作不可"}
@@ -2336,16 +2321,6 @@ export function SimpleBoard({
       return;
     }
 
-    if (action === "deck_lock") {
-      onSetDeckVisibility(player, "locked");
-      return;
-    }
-
-    if (getDeckVisibility(roomState, player) === "locked" && !isDeckStatusAction(action)) {
-      window.alert("山札がロック中です。状態変更からロックを解除してください。");
-      return;
-    }
-
     switch (action) {
       case "draw_one":
         onDrawCard(player);
@@ -2717,7 +2692,7 @@ export function SimpleBoard({
     return (
       <button
         type="button"
-        className={`dm-card deck ${deckVisibility === "locked" ? "locked" : ""} ${deckVisibility === "public" ? "public" : ""}`}
+        className={`dm-card deck ${deckVisibility === "public" ? "public" : ""}`}
         data-owner={ownerLabel}
         data-zone="deck"
         title={deckTitle}
@@ -2729,7 +2704,7 @@ export function SimpleBoard({
           event.preventDefault();
           event.stopPropagation();
 
-          if (!canOperate || deckVisibility === "locked") return;
+          if (!canOperate) return;
 
           openSingleDeckMenu(event, player);
         }}
@@ -2857,7 +2832,7 @@ export function SimpleBoard({
         .shield-empty{width:66px;height:92px}
         .dm-card{position:relative;flex:0 0 auto;border-radius:8px;border:1px solid #5c5c5c;display:flex;align-items:center;justify-content:center;text-align:center;font-size:11px;cursor:pointer;transition:filter .15s,box-shadow .15s,transform .15s;background-size:cover;background-position:center;color:#fff;padding:4px;overflow:hidden;word-break:break-word}
         .dm-card.viewer-only{cursor:pointer;border-color:#64748b}.dm-card.viewer-only:hover{box-shadow:0 0 0 2px rgba(148,163,184,.35)}.dm-card:hover{filter:brightness(1.18)}.dm-card.selected{box-shadow:0 0 0 3px var(--blue),0 0 14px rgba(78,163,255,.65);z-index:10}
-        .field{width:90px;height:126px;background:#292929;border:2px dashed #4a4a4a}.mana-card{width:66px;height:92px;background:#1f5533}.shield{width:64px;height:90px;background:#555;color:transparent}.deck{width:48px;height:67px;background:#444;color:#ddd}.deck.locked{border-color:#f97316;background:#4a2b12}.deck.public{border-color:#22c55e;background:#1f5533}.grave{width:64px;height:90px;background:#303030;border-style:dashed}
+        .field{width:90px;height:126px;background:#292929;border:2px dashed #4a4a4a}.mana-card{width:66px;height:92px;background:#1f5533}.shield{width:64px;height:90px;background:#555;color:transparent}.deck{width:48px;height:67px;background:#444;color:#ddd}.deck.public{border-color:#22c55e;background:#1f5533}.grave{width:64px;height:90px;background:#303030;border-style:dashed}
         .shield.face-down::after,.dm-card.face-down::after{content:"裏";color:#ddd;background:#222;border-radius:999px;padding:2px 10px}
         .badge,.dm-selection-order,.dm-stack-count{position:absolute;background:#111;border:1px solid #777;border-radius:999px;padding:2px 6px;font-size:10px;color:#ddd}.badge{right:4px;bottom:4px}.dm-selection-order{right:4px;top:4px;border-color:var(--blue);color:#fff;font-weight:700}.dm-stack-count{left:4px;bottom:4px;background:#000b;color:#fff}
         .opponent-hand{height:48px;background:rgba(255,255,255,.035);border-radius:7px;display:flex;align-items:center;justify-content:flex-end;gap:2px;padding:3px 5px;overflow:hidden}.op-card{width:28px;height:40px;border-radius:3px;background:#555;border:1px solid #666;flex:0 0 auto}.operation-guide-button{position:fixed;left:calc(220px + 42% + 12px);top:8px;z-index:1300;border:1px solid #555;border-radius:999px;background:#202020;color:#fff;padding:5px 10px;font-size:11px;line-height:1.1;cursor:pointer}.operation-guide-popup{position:fixed;left:calc(220px + 42% + 12px);top:38px;z-index:1301;width:360px;border:1px solid #334155;border-radius:10px;background:rgba(15,23,42,.97);color:#e2e8f0;font-size:11px;line-height:1.5;padding:10px;box-shadow:0 18px 48px rgba(0,0,0,.45);display:grid;gap:8px}.operation-guide-popup button{border:1px solid #555;border-radius:8px;background:#202020;color:#fff;padding:4px 8px;cursor:pointer}.modal-backdrop{position:fixed;inset:0;z-index:9200;background:rgba(0,0,0,.72);display:grid;place-items:center;padding:20px}.deck-modal{width:min(760px,100%);max-height:86vh;overflow:auto;border:1px solid #64748b;border-radius:14px;background:#111827;color:#f8fafc;padding:14px;display:grid;gap:12px;box-shadow:0 24px 64px rgba(0,0,0,.55)}.deck-modal.wide{width:min(980px,100%)}.modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.modal-head p{margin:4px 0 0;color:#94a3b8;font-size:12px}.modal-head button,.modal-actions button,.modal-choice button,.order-row button{border:1px solid #475569;border-radius:8px;background:#202020;color:#fff;padding:6px 9px;cursor:pointer}.modal-head button:hover,.modal-actions button:hover,.modal-choice button:hover,.order-row button:hover{background:#303030}.modal-head button:disabled,.modal-actions button:disabled,.modal-choice button:disabled,.order-row button:disabled{opacity:.45;cursor:not-allowed}.modal-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}.modal-card{border:1px solid #475569;border-radius:10px;background:#050505;color:#fff;min-height:120px;display:grid;gap:6px;place-items:center;text-align:center;padding:10px}.modal-card.selectable{cursor:pointer;user-select:none}.modal-card.selectable.selected{border:2px solid #4ea3ff;box-shadow:0 0 12px rgba(78,163,255,.65)}.modal-card.large{max-width:230px;aspect-ratio:63/88;justify-self:center}.modal-card-face{cursor:pointer;display:grid;gap:6px;place-items:center;text-align:center}.modal-card-face img{width:100%;max-height:220px;object-fit:contain;border-radius:8px;background:#111827}.modal-card-face>strong{font-size:13px;line-height:1.35}.modal-card-face>span{color:#94a3b8;font-size:12px}.modal-card-proxy{min-height:150px;width:100%;border:1px dashed #475569;border-radius:8px;padding:10px;display:grid;gap:6px;place-items:center;background:#0f172a}.modal-card-proxy small{color:#facc15}.modal-choice{border:1px solid #334155;border-radius:10px;background:#0f172a;padding:10px;display:grid;gap:8px}.modal-choice>div{display:flex;flex-wrap:wrap;gap:7px}.modal-choice button.active{border-color:#4ea3ff;background:#12365c}.order-row{display:grid;grid-template-columns:1fr auto auto;gap:6px;align-items:center}.modal-actions{display:flex;gap:8px;flex-wrap:wrap}.viewer-guide{display:grid;gap:3px;margin-top:-4px;margin-bottom:0;align-self:start;justify-self:start;z-index:5}.viewer-guide button{justify-self:start;border:1px solid #555;border-radius:999px;background:#202020;color:#fff;padding:3px 8px;font-size:10px;line-height:1.1;cursor:pointer}.viewer-guide-panel{border:1px solid #334155;border-radius:8px;background:rgba(15,23,42,.94);color:#e2e8f0;font-size:10px;line-height:1.35;padding:4px 7px}
