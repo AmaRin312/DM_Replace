@@ -2874,6 +2874,21 @@ export function SimpleBoard({
         .dm-card.tapped[data-owner="opp"][data-zone="battle"],.dm-card.tapped[data-owner="opp"][data-zone="shield"],.dm-card.tapped[data-owner="opp"][data-zone="grave"],.dm-card.tapped[data-owner="opp"][data-zone="deck"]{transform:rotate(270deg)}
         .dm-card.reversed[data-owner="opp"][data-zone="battle"],.dm-card.reversed[data-owner="opp"][data-zone="shield"],.dm-card.reversed[data-owner="opp"][data-zone="grave"],.dm-card.reversed[data-owner="opp"][data-zone="deck"]{transform:rotate(0deg)}.dm-card.reversed[data-owner="me"][data-zone="mana"]{transform:rotate(0deg)}
 
+        /* タップ/アンタップ表示の明示ルール
+           自分側の通常カードはアンタップ=正位置、タップ=時計回り90°。 */
+        .dm-card[data-owner="me"][data-zone="battle"],
+        .dm-card[data-owner="me"][data-zone="shield"],
+        .dm-card[data-owner="me"][data-zone="grave"],
+        .dm-card[data-owner="me"][data-zone="deck"]{transform:rotate(0deg)!important}
+        .dm-card.tapped[data-owner="me"][data-zone="battle"],
+        .dm-card.tapped[data-owner="me"][data-zone="shield"],
+        .dm-card.tapped[data-owner="me"][data-zone="grave"],
+        .dm-card.tapped[data-owner="me"][data-zone="deck"]{transform:rotate(90deg)!important}
+        .dm-card.reversed[data-owner="me"][data-zone="battle"],
+        .dm-card.reversed[data-owner="me"][data-zone="shield"],
+        .dm-card.reversed[data-owner="me"][data-zone="grave"],
+        .dm-card.reversed[data-owner="me"][data-zone="deck"]{transform:rotate(180deg)!important}
+
         .modal-card.selectable{cursor:pointer;user-select:none;position:relative}
         .modal-card.selectable.selected,.modal-card.selected{border:2px solid #4ea3ff!important;box-shadow:0 0 12px rgba(78,163,255,.75)!important}
         .modal-selection-order{position:absolute;right:6px;top:6px;z-index:5;border:1px solid #4ea3ff;border-radius:999px;background:#0f172a;color:#fff;font-size:12px;font-weight:700;padding:2px 8px}
